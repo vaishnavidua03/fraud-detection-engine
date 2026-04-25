@@ -9,13 +9,43 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
 
 st.set_page_config(page_title="Fraud Detection Engine", layout="wide")
 st.title("🔍 Financial Fraud Risk Engine")
 st.markdown("Upload transaction data to detect fraud using ML")
 
-SAMPLE_DATA_URL = "https://raw.githubusercontent.com/vaishnavidua03/fraud-detection-engine/main/data/sample/sample_transactions.csv"
+def generate_sample_data():
+    """Generate synthetic fraud data for training on cloud"""
+    np.random.seed(42)
+    n = 10000
+    
+    types = np.random.choice(
+        ['CASH_OUT', 'PAYMENT', 'CASH_IN', 'TRANSFER', 'DEBIT'],
+        n, p=[0.35, 0.34, 0.22, 0.08, 0.01]
+    )
+    amount = np.random.exponential(scale=50000, size=n)
+    oldbalanceOrg = np.random.exponential(scale=100000, size=n)
+    newbalanceOrig = np.maximum(0, oldbalanceOrg - amount)
+    oldbalanceDest = np.random.exponential(scale=100000, size=n)
+    newbalanceDest = oldbalanceDest + amount
+    
+    # Fraud logic — large transfers with zero new balance
+    is_fraud = (
+        (amount > 200000) &
+        (newbalanceOrig == 0) &
+        (np.isin(types, ['CASH_OUT', 'TRANSFER']))
+    ).astype(int)
+    
+    df = pd.DataFrame({
+        'type': types,
+        'amount': amount,
+        'oldbalanceOrg': oldbalanceOrg,
+        'newbalanceOrig': newbalanceOrig,
+        'oldbalanceDest': oldbalanceDest,
+        'newbalanceDest': newbalanceDest,
+        'is_fraud': is_fraud
+    })
+    return df
 
 @st.cache_resource
 def load_or_train_model():
@@ -25,41 +55,37 @@ def load_or_train_model():
             threshold = json.load(f)['threshold']
         return pipeline, threshold
 
-    st.info("Training model for first time... this takes 2-3 minutes")
-    
-    # Download sample data from GitHub
-    df = pd.read_csv(SAMPLE_DATA_URL)
-    
-    X = df.drop('is_fraud', axis=1)
-    y = df['is_fraud']
-    
-    categorical_features = ['type']
-    numerical_features = ['amount', 'oldbalanceOrg', 'newbalanceOrig',
-                          'oldbalanceDest', 'newbalanceDest']
-    
-    preprocessor = ColumnTransformer(transformers=[
-        ('num', StandardScaler(), numerical_features),
-        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
-    ])
-    
-    pipeline = Pipeline(steps=[
-        ('preprocessor', preprocessor),
-        ('classifier', RandomForestClassifier(
-            n_estimators=50,
-            random_state=42,
-            class_weight='balanced',
-            n_jobs=-1
-        ))
-    ])
-    
-    pipeline.fit(X, y)
-    
-    os.makedirs('models', exist_ok=True)
-    joblib.dump(pipeline, 'models/fraud_pipeline.joblib')
-    
-    threshold = 0.1
-    with open('models/threshold.json', 'w') as f:
-        json.dump({'threshold': threshold, 'cost': 0}, f)
+    with st.spinner("Training model for first time... (1-2 minutes)"):
+        df = generate_sample_data()
+        
+        X = df.drop('is_fraud', axis=1)
+        y = df['is_fraud']
+        
+        preprocessor = ColumnTransformer(transformers=[
+            ('num', StandardScaler(),
+             ['amount', 'oldbalanceOrg', 'newbalanceOrig',
+              'oldbalanceDest', 'newbalanceDest']),
+            ('cat', OneHotEncoder(handle_unknown='ignore'), ['type'])
+        ])
+        
+        pipeline = Pipeline(steps=[
+            ('preprocessor', preprocessor),
+            ('classifier', RandomForestClassifier(
+                n_estimators=50,
+                random_state=42,
+                class_weight='balanced',
+                n_jobs=-1
+            ))
+        ])
+        
+        pipeline.fit(X, y)
+        
+        os.makedirs('models', exist_ok=True)
+        joblib.dump(pipeline, 'models/fraud_pipeline.joblib')
+        
+        threshold = 0.1
+        with open('models/threshold.json', 'w') as f:
+            json.dump({'threshold': threshold, 'cost': 0}, f)
     
     return pipeline, threshold
 
@@ -72,7 +98,7 @@ custom_threshold = st.sidebar.slider(
     value=float(threshold), step=0.05
 )
 st.sidebar.markdown(f"**Current threshold:** {custom_threshold}")
-st.sidebar.markdown("Lower threshold = catch more fraud but more false alarms")
+st.sidebar.markdown("Lower = catch more fraud but more false alarms")
 
 uploaded_file = st.file_uploader("Upload CSV of transactions", type=['csv'])
 
@@ -131,9 +157,8 @@ if uploaded_file:
         st.image('reports/figures/shap_summary.png', caption='SHAP Feature Importance')
         st.image('reports/figures/confusion_matrix.png', caption='Confusion Matrix')
     except:
-        st.info("Model performance charts available when running locally")
+        st.info("Run locally to see full model performance charts")
 
 else:
     st.info("👆 Upload a CSV file to get started")
     st.markdown("Expected columns: `type`, `amount`, `oldbalanceOrg`, `newbalanceOrig`, `oldbalanceDest`, `newbalanceDest`")
-    
