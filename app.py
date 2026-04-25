@@ -1,22 +1,69 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import joblib
 import json
 import matplotlib.pyplot as plt
-import numpy as np
+import os
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
 
 st.set_page_config(page_title="Fraud Detection Engine", layout="wide")
 st.title("🔍 Financial Fraud Risk Engine")
 st.markdown("Upload transaction data to detect fraud using ML")
 
+SAMPLE_DATA_URL = "https://raw.githubusercontent.com/vaishnavidua03/fraud-detection-engine/main/data/sample/sample_transactions.csv"
+
 @st.cache_resource
-def load_model():
-    pipeline = joblib.load('models/fraud_pipeline.joblib')
-    with open('models/threshold.json') as f:
-        threshold = json.load(f)['threshold']
+def load_or_train_model():
+    if os.path.exists('models/fraud_pipeline.joblib'):
+        pipeline = joblib.load('models/fraud_pipeline.joblib')
+        with open('models/threshold.json') as f:
+            threshold = json.load(f)['threshold']
+        return pipeline, threshold
+
+    st.info("Training model for first time... this takes 2-3 minutes")
+    
+    # Download sample data from GitHub
+    df = pd.read_csv(SAMPLE_DATA_URL)
+    
+    X = df.drop('is_fraud', axis=1)
+    y = df['is_fraud']
+    
+    categorical_features = ['type']
+    numerical_features = ['amount', 'oldbalanceOrg', 'newbalanceOrig',
+                          'oldbalanceDest', 'newbalanceDest']
+    
+    preprocessor = ColumnTransformer(transformers=[
+        ('num', StandardScaler(), numerical_features),
+        ('cat', OneHotEncoder(handle_unknown='ignore'), categorical_features)
+    ])
+    
+    pipeline = Pipeline(steps=[
+        ('preprocessor', preprocessor),
+        ('classifier', RandomForestClassifier(
+            n_estimators=50,
+            random_state=42,
+            class_weight='balanced',
+            n_jobs=-1
+        ))
+    ])
+    
+    pipeline.fit(X, y)
+    
+    os.makedirs('models', exist_ok=True)
+    joblib.dump(pipeline, 'models/fraud_pipeline.joblib')
+    
+    threshold = 0.1
+    with open('models/threshold.json', 'w') as f:
+        json.dump({'threshold': threshold, 'cost': 0}, f)
+    
     return pipeline, threshold
 
-pipeline, threshold = load_model()
+pipeline, threshold = load_or_train_model()
 
 st.sidebar.header("Settings")
 custom_threshold = st.sidebar.slider(
@@ -84,8 +131,9 @@ if uploaded_file:
         st.image('reports/figures/shap_summary.png', caption='SHAP Feature Importance')
         st.image('reports/figures/confusion_matrix.png', caption='Confusion Matrix')
     except:
-        st.info("Charts not found — run evaluate.py and explain.py first")
+        st.info("Model performance charts available when running locally")
 
 else:
     st.info("👆 Upload a CSV file to get started")
     st.markdown("Expected columns: `type`, `amount`, `oldbalanceOrg`, `newbalanceOrig`, `oldbalanceDest`, `newbalanceDest`")
+    
